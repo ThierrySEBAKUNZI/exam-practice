@@ -1,0 +1,573 @@
+---
+title: "Cholera Outbreak Analysis Report"
+author: "MSc Big Data Analytics Student"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 10,
+  fig.height = 6,
+  fig.align = "center"
+)
+```
+
+# Cholera Outbreak Analysis - 2008
+
+This report analyzes a cholera outbreak affecting two provinces. The analysis includes data cleaning, descriptive statistics, correlation analysis, and regression modeling.
+
+---
+
+# Load Libraries
+
+```{r}
+# Load required packages (no install calls in knit)
+library(readxl)
+library(ggplot2)      # visualization
+library(dplyr)        # data manipulation
+library(tidyr)        # tidying
+library(readr)        # parse_number
+library(knitr)        # reporting
+library(kableExtra)   # nice tables
+library(gridExtra)    # combining plots
+library(reshape2)     # reshaping
+library(naniar)       # vis_miss
+library(viridis)      # palettes
+library(lubridate)    # robust date parsing
+
+cat("Libraries loaded successfully!\n")
+```
+
+---
+
+# Load and Explore Data
+
+```{r}
+# Read the data (ensure the file is in the working directory)
+# You can change the file name/path as needed.
+chol_outbreak_df <- read_excel("DataFile.xls")
+
+# Display first few rows
+head(chol_outbreak_df, 5)
+View(chol_outbreak_df)
+```
+
+---
+
+# TASK 1: Data Quality Assessment
+
+```{r}
+# Missing values per column (NA-safe)
+missing_df <- data.frame(
+  Column = names(chol_outbreak_df),
+  Missing_Count = sapply(chol_outbreak_df, function(v) sum(is.na(v))),
+  stringsAsFactors = FALSE
+) |>
+  dplyr::mutate(Percent_Missing = round(100 * Missing_Count / nrow(chol_outbreak_df), 2)) |>
+  dplyr::arrange(dplyr::desc(Percent_Missing))
+
+kable(missing_df, caption = "Missing Values by Column") |>
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+```{r}
+# Visualize missing data pattern across all rows
+naniar::vis_miss(chol_outbreak_df)
+```
+
+## Data Quality Issues Found
+
+```{r}
+# SEX VARIABLE
+cat("\n\nSEX VARIABLE ISSUES:\n")
+cat("===================\n")
+sex_table <- table(chol_outbreak_df$Sex, useNA = "always")
+print(sex_table)
+cat("\nProblems: Mixed case (F, f, M, m), extra spaces, missing values\n")
+
+# AGE VARIABLE
+cat("\nAGE VARIABLE ISSUES:\n")
+cat("===================\n")
+cat("Sample values:", paste(as.character(chol_outbreak_df$Age[750:min(780, nrow(chol_outbreak_df))]), collapse = ", "), "\n")
+cat("Problems: Mixed formats (28, 4yrs, 1yr 8mths), different abbreviations\n")
+
+# LAB RESULT VARIABLE
+cat("\nLAB RESULT ISSUES:\n")
+cat("==================\n")
+lab_table <- table(chol_outbreak_df$Lab_Result, useNA = "always")
+print(lab_table)
+cat("Problems: Inconsistent capitalization (Positive, POSITive, positive)\n")
+```
+
+---
+
+# TASK 2: Clean Sex Variable
+
+```{r}
+# Clean sex variable - standardize casing and whitespace
+chol_outbreak_df <- chol_outbreak_df |>
+  mutate(
+    Sex_raw   = tolower(trimws(Sex)),
+    Sex_Clean = dplyr::case_when(
+      Sex_raw %in% c("f", "female") ~ "Female",
+      Sex_raw %in% c("m", "male")   ~ "Male",
+      TRUE                          ~ NA_character_
+    )
+  )
+
+# Verify results
+cat("SEX VARIABLE AFTER CLEANING:\n")
+sex_clean_table <- table(chol_outbreak_df$Sex_Clean, useNA = "always")
+print(sex_clean_table)
+
+# Visualize
+ggplot(data = chol_outbreak_df, aes(x = Sex_Clean, fill = Sex_Clean)) +
+  geom_bar() +
+  theme_minimal() +
+  labs(title = "Gender Distribution After Cleaning",
+       x = "Gender",
+       y = "Count") +
+  theme(legend.position = "none")
+```
+
+---
+
+# TASK 3: Recode Age into Groups (NA-safe)
+
+```{r}
+# Extract first numeric portion from Age (handles '4yrs', '1yr 8mths', etc.)
+chol_outbreak_df <- chol_outbreak_df |>
+  mutate(
+    Age_chr     = as.character(Age),
+    Age_Numeric = readr::parse_number(Age_chr)   # NA if no number found
+  )
+
+# Create age groups using vectorised case_when
+chol_outbreak_df <- chol_outbreak_df |>
+  mutate(
+    AgeGroup = dplyr::case_when(
+      is.na(Age_Numeric)        ~ NA_character_,
+      Age_Numeric < 5            ~ "Less than 5 years",
+      Age_Numeric < 15           ~ "5-14 years",
+      Age_Numeric < 25           ~ "15-24 years",
+      Age_Numeric < 50           ~ "25-49 years",
+      TRUE                       ~ "50 years and above"
+    )
+  )
+
+# Check results
+cat("AGE GROUP DISTRIBUTION:\n")
+age_table <- table(chol_outbreak_df$AgeGroup, useNA = "always")
+print(age_table)
+
+# Visualize
+ggplot(data = chol_outbreak_df, aes(x = AgeGroup, fill = AgeGroup)) +
+  geom_bar() +
+  theme_minimal() +
+  labs(title = "Cases by Age Group",
+       x = "Age Group",
+       y = "Count") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none")
+```
+
+---
+
+# TASK 4 & 5: Descriptive Statistics
+
+## Total Cases and Geographic Distribution
+
+```{r}
+# Total cases
+total_cases <- nrow(chol_outbreak_df)
+cat("TOTAL CASES:", total_cases, "\n\n")
+
+# Cases by district using dplyr
+district_summary <- chol_outbreak_df |>
+  group_by(District) |>
+  summarise(Cases = dplyr::n(), .groups = "drop") |>
+  arrange(desc(Cases))
+
+kable(district_summary, caption = "Cases by District") |>
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+# Cases by province
+cat("\nCases by Province:\n")
+province_summary <- chol_outbreak_df |>
+  group_by(Province) |>
+  summarise(Cases = dplyr::n(), .groups = "drop") |>
+  arrange(desc(Cases))
+
+kable(province_summary, caption = "Cases by Province") |>
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+## Mortality Statistics
+
+```{r}
+# Clean status variable
+chol_outbreak_df <- chol_outbreak_df |>
+  mutate(Status_Clean = tolower(trimws(Status)))
+
+# Count outcomes
+total_deaths   <- sum(chol_outbreak_df$Status_Clean == "died",   na.rm = TRUE)
+total_alive    <- sum(chol_outbreak_df$Status_Clean == "alive",  na.rm = TRUE)
+total_admitted <- sum(chol_outbreak_df$Status_Clean == "admitted", na.rm = TRUE)
+
+# Calculate rates
+cfr           <- (total_deaths / total_cases) * 100
+recovery_rate <- (total_alive  / total_cases) * 100
+
+# Create summary table
+mortality_summary <- data.frame(
+  Outcome = c("Total Cases", "Deaths", "Alive", "Admitted", "CFR (%)", "Recovery Rate (%)"),
+  Number  = c(total_cases, total_deaths, total_alive, total_admitted, 
+             round(cfr, 2), round(recovery_rate, 2))
+)
+
+kable(mortality_summary, caption = "Mortality Summary") |>
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+## Age Group Analysis
+
+```{r}
+# Analyze by age group using dplyr
+age_analysis <- chol_outbreak_df |>
+  filter(!is.na(AgeGroup)) |>
+  group_by(AgeGroup) |>
+  summarise(
+    Total_Cases = dplyr::n(),
+    Deaths = sum(Status_Clean == "died", na.rm = TRUE),
+    CFR = round((sum(Status_Clean == "died", na.rm = TRUE) / dplyr::n()) * 100, 2),
+    .groups = "drop"
+  ) |>
+  arrange(desc(Total_Cases))
+
+kable(age_analysis, caption = "Epidemiology by Age Group") |>
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+# Children analysis
+children <- chol_outbreak_df |>
+  filter(AgeGroup == "Less than 5 years")
+
+cat("\n\nCHILDREN (<5 YEARS):\n")
+cat("Cases:", nrow(children), "\n")
+cat("Deaths:", sum(children$Status_Clean == "died", na.rm = TRUE), "\n")
+if (nrow(children) > 0) {
+  cat("CFR:", round((sum(children$Status_Clean == "died", na.rm = TRUE) / nrow(children)) * 100, 2), "%\n")
+} else {
+  cat("CFR: NA (no cases)\n")
+}
+```
+
+## Gender Analysis
+
+```{r}
+# Analyze by gender
+gender_analysis <- chol_outbreak_df |>
+  filter(!is.na(Sex_Clean)) |>
+  group_by(Sex_Clean) |>
+  summarise(
+    Total_Cases = dplyr::n(),
+    Deaths = sum(Status_Clean == "died", na.rm = TRUE),
+    CFR = round((sum(Status_Clean == "died", na.rm = TRUE) / dplyr::n()) * 100, 2),
+    .groups = "drop"
+  )
+
+kable(gender_analysis, caption = "Epidemiology by Gender") |>
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+---
+
+# TASK 6: Epidemic Curve
+
+```{r}
+# Parse dates robustly (tries mdy, dmy, ymd)
+onset_col_name <- "Date of onset"  # <-- change this to your actual onset column name
+
+if (!onset_col_name %in% names(chol_outbreak_df)) {
+  stop(sprintf("Column '%s' not found in chol_outbreak_df.", onset_col_name))
+}
+
+chol_outbreak_df$Date_Onset <- as.Date(
+  suppressWarnings(
+    lubridate::parse_date_time(
+      as.character(chol_outbreak_df[[onset_col_name]]),
+      orders = c("mdy", "dmy", "ymd")
+    )
+  )
+)
+
+# Count daily cases
+daily_cases <- chol_outbreak_df |>
+  dplyr::filter(!is.na(Date_Onset)) |>
+  dplyr::group_by(Date_Onset) |>
+  dplyr::summarise(Cases = dplyr::n(), .groups = "drop")
+
+# Plot epidemic curve
+ggplot(data = daily_cases, aes(x = Date_Onset, y = Cases)) +
+  geom_line(color = "darkred", size = 1) +
+  geom_point(color = "red", size = 2) +
+  geom_area(fill = "red", alpha = 0.2) +
+  theme_minimal() +
+  labs(title = "Cholera Outbreak Epidemic Curve",
+       x = "Date of Onset",
+       y = "Number of Cases") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Peak statistics
+if (nrow(daily_cases) > 0) {
+  peak_date  <- daily_cases$Date_Onset[which.max(daily_cases$Cases)]
+  peak_cases <- max(daily_cases$Cases)
+  cat("\nPeak Date:", as.character(peak_date), "\n")
+  cat("Peak Cases:", peak_cases, "\n")
+} else {
+  cat("\nNo valid onset dates to compute epidemic curve.\n")
+}
+```
+
+---
+
+# TASK 7: Statistical Tests (Chi-Square)
+
+```{r}
+cat("CHI-SQUARE TESTS\n")
+cat("================\n\n")
+
+# AgeGroup (remove NAs)
+age_vals <- na.omit(chol_outbreak_df$AgeGroup)
+if (length(age_vals)) {
+  chi_age <- chisq.test(table(age_vals))
+  cat("AgeGroup chi-square p =", format(chi_age$p.value, scientific = TRUE), "\n")
+} else {
+  cat("AgeGroup: no data after removing NAs.\n")
+}
+
+# Gender (remove NAs)
+sex_vals <- na.omit(chol_outbreak_df$Sex_Clean)
+if (length(sex_vals)) {
+  chi_gender <- chisq.test(table(sex_vals))
+  cat("Gender chi-square p =", format(chi_gender$p.value, scientific = TRUE), "\n")
+} else {
+  cat("Gender: no data after removing NAs.\n")
+}
+
+# District (remove NAs)
+dist_vals <- na.omit(chol_outbreak_df$District)
+if (length(dist_vals)) {
+  chi_district <- chisq.test(table(dist_vals))
+  cat("District chi-square p =", format(chi_district$p.value, scientific = TRUE), "\n")
+} else {
+  cat("District: no data after removing NAs.\n")
+}
+```
+
+---
+
+# TASK 8: Correlation and Regression Analysis
+
+## Correlation Analysis
+
+```{r}
+cat("CORRELATION ANALYSIS\n")
+cat("====================\n\n")
+
+# Create numeric variables for correlation (NA-safe)
+chol_outbreak_df <- chol_outbreak_df |>
+  mutate(
+    Status_Numeric = dplyr::case_when(Status_Clean == "died"  ~ 1L,
+                                      Status_Clean == "alive" ~ 0L,
+                                      TRUE                    ~ NA_integer_),
+    Gender_Numeric = dplyr::case_when(Sex_Clean == "Male"     ~ 1L,
+                                      Sex_Clean == "Female"   ~ 0L,
+                                      TRUE                    ~ NA_integer_),
+    Water_Treated  = dplyr::if_else(!is.na(`Water treatment`) & nzchar(trimws(`Water treatment`)), 1L, 0L)
+  )
+
+corr_data <- chol_outbreak_df |>
+  dplyr::select(Age_Numeric, Status_Numeric, Gender_Numeric, Water_Treated) |>
+  tidyr::drop_na()
+
+if (nrow(corr_data) > 1) {
+  correlation_matrix <- cor(corr_data, use = "complete.obs")
+  print(round(correlation_matrix, 3))
+  
+  # Interpret correlations
+  cat("\n\nInterpretation:\n")
+  if ("Age_Numeric" %in% colnames(correlation_matrix) && "Status_Numeric" %in% colnames(correlation_matrix)) {
+    cat("Age vs Status (Death):", round(correlation_matrix["Age_Numeric", "Status_Numeric"], 3), "\n")
+  }
+  if ("Water_Treated" %in% colnames(correlation_matrix) && "Status_Numeric" %in% colnames(correlation_matrix)) {
+    cat("Water Treatment vs Status:", round(correlation_matrix["Water_Treated", "Status_Numeric"], 3), "\n")
+  }
+} else {
+  cat("Not enough complete cases to compute correlations.\n")
+}
+```
+
+## Linear Regression - Age Effect on Mortality
+
+```{r}
+cat("\n\nLINEAR REGRESSION: Age Effect on Mortality\n")
+cat("===========================================\n\n")
+
+# Prepare data for regression
+reg_data <- chol_outbreak_df |>
+  dplyr::select(Age_Numeric, Status_Numeric, Water_Treated, Gender_Numeric) |>
+  tidyr::drop_na()
+
+if (nrow(reg_data) > 2) {
+  # Model 1: Simple regression with age
+  model1 <- lm(Status_Numeric ~ Age_Numeric, data = reg_data)
+  cat("Model 1: Mortality ~ Age\n")
+  cat("========================\n")
+  print(summary(model1))
+  
+  # Model 2: Multiple regression
+  model2 <- lm(Status_Numeric ~ Age_Numeric + Water_Treated + Gender_Numeric, data = reg_data)
+  cat("\n\nModel 2: Mortality ~ Age + Water_Treatment + Gender\n")
+  cat("===================================================\n")
+  print(summary(model2))
+  
+  # Interpretation
+  cat("\n\nINTERPRETATION:\n")
+  if (coef(summary(model1))["Age_Numeric","Pr(>|t|)"] < 0.05) {
+    cat("Age has a statistically significant effect on mortality (p < 0.05)\n")
+  } else {
+    cat("Age does NOT have a statistically significant effect on mortality (p >= 0.05)\n")
+  }
+  if ("Water_Treated" %in% colnames(model2$model)) {
+    if (coef(summary(model2))["Water_Treated","Pr(>|t|)"] < 0.05) {
+      cat("Water treatment has a statistically significant protective effect (p < 0.05)\n")
+    } else {
+      cat("Water treatment effect is NOT statistically significant\n")
+    }
+  }
+} else {
+  cat("Not enough complete cases to fit regression models.\n")
+}
+```
+
+## Risk Factors Analysis
+
+```{r}
+cat("\n\nRISK FACTOR ANALYSIS\n")
+cat("====================\n\n")
+
+# Water treatment impact
+water_analysis <- chol_outbreak_df |>
+  mutate(Status_Clean = tolower(trimws(Status))) |>
+  filter(!is.na(`Water treatment`) & `Water treatment` != "") |>
+  group_by(`Water treatment`) |>
+  summarise(
+    Cases  = n(),
+    Deaths = sum(Status_Clean == "died", na.rm = TRUE),
+    CFR    = round(100 * Deaths / Cases, 2),
+    .groups = "drop"
+  )
+
+kable(water_analysis, caption = "CFR by Water Treatment Status") |>
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+# Admission status impact
+admission_analysis <- chol_outbreak_df |>
+  mutate(Status_Clean = tolower(trimws(Status))) |>
+  filter(!is.na(`In/Outpatient`) & `In/Outpatient` != "") |>
+  group_by(`In/Outpatient`) |>
+  summarise(
+    Cases = dplyr::n(),
+    Deaths = sum(Status_Clean == "died", na.rm = TRUE),
+    CFR = round((sum(Status_Clean == "died", na.rm = TRUE) / dplyr::n()) * 100, 2),
+    .groups = "drop"
+  )
+
+kable(admission_analysis, caption = "CFR by Admission Status") |>
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+---
+
+# Summary and Recommendations
+
+```{r}
+cat("KEY EPIDEMIOLOGICAL FINDINGS\n")
+cat("=============================\n\n")
+
+# Gender distribution string
+gender_pct <- chol_outbreak_df |>
+  filter(!is.na(Sex_Clean)) |>
+  count(Sex_Clean) |>
+  mutate(pct = round(100 * n / sum(n), 1))
+
+gender_str <- paste0(
+  if ("Male"   %in% gender_pct$Sex_Clean)   paste0(gender_pct$pct[gender_pct$Sex_Clean=="Male"], "% Male")   else "NA% Male",
+  ", ",
+  if ("Female" %in% gender_pct$Sex_Clean)   paste0(gender_pct$pct[gender_pct$Sex_Clean=="Female"], "% Female") else "NA% Female"
+)
+
+# Top geographic focus (top 2 districts)
+top_geo <- chol_outbreak_df |>
+  count(District, sort = TRUE) |>
+  slice_head(n = 2) |>
+  pull(District) |>
+  paste(collapse = ", ")
+
+# Most affected age group
+most_age_group <- if (any(!is.na(chol_outbreak_df$AgeGroup))) {
+  names(sort(table(chol_outbreak_df$AgeGroup), decreasing = TRUE))[1]
+} else NA_character_
+
+summary_table <- data.frame(
+  Metric = c(
+    "Total Cases",
+    "Total Deaths",
+    "Case Fatality Rate (%)",
+    "Recovery Rate (%)",
+    "Mean Age",
+    "Most Affected Age Group",
+    "Gender Distribution",
+    "Geographic Focus"
+  ),
+  Value = c(
+    total_cases,
+    total_deaths,
+    round(cfr, 2),
+    round(recovery_rate, 2),
+    round(mean(chol_outbreak_df$Age_Numeric, na.rm = TRUE), 1),
+    ifelse(is.na(most_age_group), "N/A", most_age_group),
+    gender_str,
+    ifelse(is.na(top_geo) || top_geo=="", "N/A", top_geo)
+  ),
+  check.names = FALSE
+)
+
+kable(summary_table, caption = "Summary of Outbreak Characteristics") |>
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+cat("\n\nRECOMMENDATIONS FOR HEALTH MINISTRY\n")
+cat("====================================\n\n")
+cat("IMMEDIATE ACTIONS:\n")
+cat("- Deploy mobile clinics to top-affected districts\n")
+cat("- Distribute water treatment supplies (protective effect suggested)\n")
+cat("- Increase healthcare facility capacity\n\n")
+
+cat("SHORT-TERM (2-4 weeks):\n")
+cat("- Train community health workers for early detection\n")
+cat("- Establish daily case monitoring system\n")
+cat("- Investigate water contamination source\n\n")
+
+cat("MEDIUM-TERM (1-3 months):\n")
+cat("- Improve water and sanitation infrastructure\n")
+cat("- Strengthen disease surveillance system\n")
+```
+---
+
+# Conclusion
+
+This analysis summarizes the current cholera outbreak using robust, NA-safe procedures for cleaning, summarization, and modeling. Findings highlight geographic concentration, meaningful age and gender patterns, and a likely protective role of water treatment. The approach avoids failures from missing values or mixed formats by standardizing text fields, extracting numeric ages, and filtering to complete cases for statistical tests and regression.

@@ -1,0 +1,453 @@
+---
+title: "Cholera Outbreak Analysis Report"
+subtitle: "Statistical Analysis for Ministry of Health Briefing"
+author: "Thierry SEBAKUNZI | ID:101394"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: bootstrap
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, 
+                      fig.width = 10, fig.height = 6)
+```
+
+# Executive Summary
+
+This report analyzes the cholera outbreak data from two provinces to provide the Minister of Health with comprehensive insights for resource allocation and response planning.
+
+# 1. Data Loading and Initial Examination
+
+```{r load-libraries}
+# Load required libraries
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(kableExtra)
+library(lubridate)
+library(knitr)
+library(DT)
+library(plotly)
+library(gridExtra)
+library(scales)
+```
+
+```{r load-data}
+# Load the data
+data <- read_excel("DataFile.xls")
+
+# Display basic information about the dataset
+cat("Dataset dimensions:", dim(data)[1], "rows,", dim(data)[2], "columns\n")
+cat("Column names:", paste(names(data), collapse = ", "), "\n")
+
+# Display first few rows
+head(data) %>% kable(caption = "First 6 rows of the dataset")
+```
+
+```{r data-structure}
+# Examine data structure
+str(data)
+summary(data)
+```
+
+# 2. Data Quality Assessment
+
+```{r data-quality}
+# Check for missing values
+missing_summary <- data %>%
+  summarise_all(~sum(is.na(.))) %>%
+  gather(Variable, Missing_Count) %>%
+  mutate(Missing_Percentage = round(Missing_Count / nrow(data) * 100, 2))
+
+missing_summary %>% 
+  kable(caption = "Missing Values Summary") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+# Check unique values in key variables
+cat("\nUnique values in Sex variable:\n")
+table(data$Sex, useNA = "ifany")
+
+cat("\nUnique values in Outcome variable:\n")
+table(data$Outcome, useNA = "ifany")
+
+cat("\nUnique values in District variable:\n")
+table(data$District, useNA = "ifany")
+
+# Check age distribution
+cat("\nAge variable summary:\n")
+summary(data$Age)
+```
+
+## Data Quality Issues Identified:
+
+1. **Missing Values**: Check for any missing data in critical variables
+2. **Sex Variable Inconsistency**: Multiple formats for gender coding
+3. **Date Format**: Ensure date variables are properly formatted
+4. **Age Outliers**: Check for unrealistic age values
+5. **Outcome Coding**: Verify consistent outcome coding
+
+# 3. Data Cleaning and Harmonization
+
+```{r harmonize-sex}
+# Harmonize Sex variable
+data <- data %>%
+  mutate(Sex_Clean = case_when(
+    tolower(Sex) %in% c("m", "male", "homme") ~ "Male",
+    tolower(Sex) %in% c("f", "female", "femme") ~ "Female",
+    TRUE ~ "Unknown"
+  ))
+
+# Check the harmonization
+table(data$Sex, data$Sex_Clean, useNA = "ifany")
+```
+
+```{r recode-age-groups}
+# Recode Age into AgeGroup
+data <- data %>%
+  mutate(AgeGroup = case_when(
+    Age < 5 ~ "Less than 5 years",
+    Age >= 5 & Age <= 14 ~ "5-14 years",
+    Age >= 15 & Age <= 24 ~ "15-24 years",
+    Age >= 25 & Age <= 49 ~ "25-49 years",
+    Age >= 50 ~ "50 years and above",
+    TRUE ~ "Unknown"
+  )) %>%
+  mutate(AgeGroup = factor(AgeGroup, levels = c("Less than 5 years", "5-14 years", 
+                                                "15-24 years", "25-49 years", 
+                                                "50 years and above", "Unknown")))
+
+# Check age group distribution
+table(data$AgeGroup, useNA = "ifany")
+```
+
+```{r date-processing}
+# Process date variables (assuming DateOnset exists)
+if("DateOnset" %in% names(data)) {
+  data$DateOnset <- as.Date(data$DateOnset)
+  data$EpiWeek <- epiweek(data$DateOnset)
+}
+```
+
+# 4. Statistical Analysis for Minister's Briefing
+
+## 4.1 Total Number of Cases and Geographical Distribution
+
+```{r total-cases}
+total_cases <- nrow(data)
+cat("Total number of cases:", total_cases, "\n")
+
+# Geographical distribution
+geo_dist <- data %>%
+  group_by(District) %>%
+  summarise(
+    Cases = n(),
+    Percentage = round(n()/nrow(data)*100, 1)
+  ) %>%
+  arrange(desc(Cases))
+
+geo_dist %>% 
+  kable(caption = "Geographical Distribution of Cases") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+## 4.2 Deaths and Case Fatality Rate
+
+```{r deaths-cfr}
+# Calculate deaths and CFR
+outcome_summary <- data %>%
+  group_by(Outcome) %>%
+  summarise(Count = n()) %>%
+  mutate(Percentage = round(Count/sum(Count)*100, 1))
+
+deaths <- sum(data$Outcome == "Death" | data$Outcome == "Died", na.rm = TRUE)
+cfr <- round(deaths/total_cases*100, 2)
+
+cat("Number of deaths:", deaths, "\n")
+cat("Case Fatality Rate:", cfr, "%\n")
+
+outcome_summary %>% 
+  kable(caption = "Distribution by Outcome") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+## 4.3 Age Group Analysis
+
+```{r age-analysis}
+# Age group distribution
+age_dist <- data %>%
+  group_by(AgeGroup) %>%
+  summarise(
+    Cases = n(),
+    Deaths = sum(Outcome %in% c("Death", "Died"), na.rm = TRUE),
+    CFR = round(Deaths/Cases*100, 1),
+    Percentage = round(Cases/nrow(data)*100, 1)
+  ) %>%
+  arrange(desc(Cases))
+
+age_dist %>% 
+  kable(caption = "Cases and Deaths by Age Group") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+# Highlight children (<5 years)
+children_cases <- age_dist$Cases[age_dist$AgeGroup == "Less than 5 years"]
+children_percentage <- age_dist$Percentage[age_dist$AgeGroup == "Less than 5 years"]
+
+cat("\nChildren under 5 years:\n")
+cat("Cases:", children_cases, "(", children_percentage, "% of total cases)\n")
+```
+
+## 4.4 Gender Distribution
+
+```{r gender-analysis}
+# Gender distribution
+gender_dist <- data %>%
+  group_by(Sex_Clean) %>%
+  summarise(
+    Cases = n(),
+    Deaths = sum(Outcome %in% c("Death", "Died"), na.rm = TRUE),
+    CFR = round(Deaths/Cases*100, 1),
+    Percentage = round(Cases/nrow(data)*100, 1)
+  )
+
+gender_dist %>% 
+  kable(caption = "Cases and Deaths by Gender") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+## 4.5 Statistical Tests for Equality Across Groups
+
+```{r statistical-tests}
+# Chi-square test for age groups
+age_chi <- chisq.test(table(data$AgeGroup))
+cat("Chi-square test for equal distribution across age groups:\n")
+cat("Chi-square statistic:", round(age_chi$statistic, 3), "\n")
+cat("p-value:", format(age_chi$p.value, scientific = TRUE), "\n")
+
+# Chi-square test for gender
+gender_chi <- chisq.test(table(data$Sex_Clean))
+cat("\nChi-square test for equal distribution across genders:\n")
+cat("Chi-square statistic:", round(gender_chi$statistic, 3), "\n")
+cat("p-value:", format(gender_chi$p.value, scientific = TRUE), "\n")
+
+# Chi-square test for districts
+district_chi <- chisq.test(table(data$District))
+cat("\nChi-square test for equal distribution across districts:\n")
+cat("Chi-square statistic:", round(district_chi$statistic, 3), "\n")
+cat("p-value:", format(district_chi$p.value, scientific = TRUE), "\n")
+```
+
+## 4.6 Recovery Rate Analysis
+
+```{r recovery-rate}
+# Calculate recovery rate
+recovery_summary <- data %>%
+  group_by(Outcome) %>%
+  summarise(Count = n()) %>%
+  mutate(
+    Percentage = round(Count/sum(Count)*100, 1),
+    Rate = case_when(
+      Outcome %in% c("Recovered", "Recovery", "Alive") ~ "Recovery Rate",
+      Outcome %in% c("Death", "Died", "Dead") ~ "Death Rate",
+      TRUE ~ "Other"
+    )
+  )
+
+recovered <- sum(data$Outcome %in% c("Recovered", "Recovery", "Alive"), na.rm = TRUE)
+recovery_rate <- round(recovered/total_cases*100, 2)
+
+cat("Recovery rate:", recovery_rate, "%\n")
+
+recovery_summary %>% 
+  kable(caption = "Outcome Summary") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+# 5. Visualizations
+
+## 5.1 Epidemic Curve
+
+```{r epidemic-curve}
+if("DateOnset" %in% names(data) && !all(is.na(data$DateOnset))) {
+  # Create epidemic curve
+  epi_curve_data <- data %>%
+    filter(!is.na(DateOnset)) %>%
+    group_by(DateOnset) %>%
+    summarise(Cases = n()) %>%
+    arrange(DateOnset)
+  
+  p1 <- ggplot(epi_curve_data, aes(x = DateOnset, y = Cases)) +
+    geom_col(fill = "steelblue", alpha = 0.7) +
+    geom_smooth(method = "loess", se = FALSE, color = "red") +
+    labs(title = "Epidemic Curve - Cholera Outbreak",
+         subtitle = "Daily Number of Cases by Date of Onset",
+         x = "Date of Onset",
+         y = "Number of Cases") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  
+  print(p1)
+} else {
+  cat("Date of onset data not available for epidemic curve\n")
+}
+```
+
+## 5.2 Geographical Distribution
+
+```{r geo-visualization}
+# Bar chart of cases by district
+p2 <- ggplot(geo_dist, aes(x = reorder(District, Cases), y = Cases)) +
+  geom_col(fill = "coral", alpha = 0.8) +
+  geom_text(aes(label = Cases), hjust = -0.1) +
+  coord_flip() +
+  labs(title = "Geographical Distribution of Cholera Cases",
+       x = "District",
+       y = "Number of Cases") +
+  theme_minimal()
+
+print(p2)
+```
+
+## 5.3 Age Group Distribution
+
+```{r age-visualization}
+# Bar chart of cases by age group
+p3 <- ggplot(age_dist, aes(x = AgeGroup, y = Cases)) +
+  geom_col(fill = "lightgreen", alpha = 0.8) +
+  geom_text(aes(label = Cases), vjust = -0.5) +
+  labs(title = "Distribution of Cholera Cases by Age Group",
+       x = "Age Group",
+       y = "Number of Cases") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+print(p3)
+
+# CFR by age group
+p4 <- ggplot(age_dist, aes(x = AgeGroup, y = CFR)) +
+  geom_col(fill = "orange", alpha = 0.8) +
+  geom_text(aes(label = paste0(CFR, "%")), vjust = -0.5) +
+  labs(title = "Case Fatality Rate by Age Group",
+       x = "Age Group",
+       y = "Case Fatality Rate (%)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+print(p4)
+```
+
+## 5.4 Gender Distribution
+
+```{r gender-visualization}
+# Pie chart for gender distribution
+p5 <- ggplot(gender_dist, aes(x = "", y = Cases, fill = Sex_Clean)) +
+  geom_bar(stat = "identity", width = 1) +
+  coord_polar("y", start = 0) +
+  labs(title = "Gender Distribution of Cholera Cases",
+       fill = "Gender") +
+  theme_void() +
+  geom_text(aes(label = paste0(Cases, "\n(", Percentage, "%)")), 
+            position = position_stack(vjust = 0.5))
+
+print(p5)
+```
+
+## 5.5 Outcome Distribution
+
+```{r outcome-visualization}
+# Bar chart of outcomes
+p6 <- ggplot(outcome_summary, aes(x = Outcome, y = Count)) +
+  geom_col(fill = "purple", alpha = 0.7) +
+  geom_text(aes(label = paste0(Count, "\n(", Percentage, "%)")), vjust = -0.5) +
+  labs(title = "Distribution of Case Outcomes",
+       x = "Outcome",
+       y = "Number of Cases") +
+  theme_minimal()
+
+print(p6)
+```
+
+# 6. Risk Factor Analysis
+
+```{r risk-factors}
+# Logistic regression for death outcome
+if(sum(data$Outcome %in% c("Death", "Died"), na.rm = TRUE) > 0) {
+  
+  # Create binary death outcome
+  data$Death <- ifelse(data$Outcome %in% c("Death", "Died"), 1, 0)
+  
+  # Logistic regression model
+  model <- glm(Death ~ AgeGroup + Sex_Clean + District, 
+               data = data, family = binomial)
+  
+  cat("Logistic Regression Results for Death Outcome:\n")
+  summary(model)
+  
+  # Odds ratios
+  or_results <- exp(coef(model))
+  cat("\nOdds Ratios:\n")
+  print(round(or_results, 3))
+  
+} else {
+  cat("No deaths recorded for risk factor analysis\n")
+}
+```
+
+# 7. Key Findings Summary
+
+## For the Minister of Health:
+
+1. **Total Cases**: `r total_cases` cholera cases recorded across two provinces
+
+2. **Geographical Impact**: 
+   - Most affected district: `r geo_dist$District[1]` (`r geo_dist$Cases[1]` cases)
+   - Least affected district: `r geo_dist$District[nrow(geo_dist)]` (`r geo_dist$Cases[nrow(geo_dist)]` cases)
+
+3. **Mortality**: 
+   - Deaths: `r deaths`
+   - Case Fatality Rate: `r cfr`%
+
+4. **Age Groups**:
+   - Most affected: `r age_dist$AgeGroup[1]` (`r age_dist$Cases[1]` cases)
+   - Children under 5: `r children_cases` cases (`r children_percentage`% of total)
+
+5. **Gender Distribution**: 
+   - Males: `r gender_dist$Cases[gender_dist$Sex_Clean == "Male"]` cases
+   - Females: `r gender_dist$Cases[gender_dist$Sex_Clean == "Female"]` cases
+
+6. **Recovery Rate**: `r recovery_rate`%
+
+# 8. Recommendations for Surveillance and Outbreak Response
+
+Based on the analysis, I recommend:
+
+## Immediate Actions:
+1. **Resource Allocation**: Focus resources on the most affected districts
+2. **Targeted Interventions**: Prioritize age groups with highest case fatality rates
+3. **Enhanced Surveillance**: Strengthen case detection in underreporting areas
+
+## Data Quality Improvements:
+1. **Standardization**: Implement standardized data collection forms
+2. **Training**: Train data collectors on consistent variable coding
+3. **Validation**: Implement real-time data validation checks
+4. **Completeness**: Ensure all critical variables are captured
+
+## Surveillance Strengthening:
+1. **Early Warning**: Establish early warning systems in high-risk areas
+2. **Community Engagement**: Involve communities in case identification
+3. **Laboratory Capacity**: Strengthen laboratory confirmation capabilities
+4. **Contact Tracing**: Implement systematic contact tracing
+
+## Response Optimization:
+1. **Treatment Centers**: Establish treatment centers in affected areas
+2. **WASH Interventions**: Improve water, sanitation, and hygiene
+3. **Health Education**: Conduct community health education campaigns
+4. **Supply Chain**: Ensure adequate medical supplies and ORS
+
+---
+
+*Analysis completed on `r Sys.Date()` using R version `r R.version.string`*
